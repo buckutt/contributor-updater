@@ -1,0 +1,10 @@
+{
+  "name": "contributor-updater",
+  "version": "1.0.0",
+  "description": "",
+  "author": "Lucas Soulier <lucas.soulier@utt.fr>",
+  "private": true,
+  "dependencies": {
+    "axios": "^0.16.2"
+  }
+}

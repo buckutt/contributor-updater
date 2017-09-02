@@ -40,6 +40,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
     })
     .then((members) => {
         buckuttMembers = members.data.map(member => ({
+            id  : member.id,
             mail: member.mail,
             current: {
                 contributor   : (member.groups.findIndex(group => group.id === config.buckutt.contributorGroup && group._through.period.id === config.buckutt.defaultPeriod) > -1),
@@ -47,7 +48,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
             }
         }));
 
-        return axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}&limit=100`);
+        return axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}`);
     })
     .then((users) => {
         const students = users.data.map(etu => ({
@@ -60,9 +61,41 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
         }));
 
         students.forEach((student) => {
-            axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}&limit=100`);
+            const member = buckuttMembers.find(m => m.mail === student.mail);
+
+            if (!member) {
+                const newUser = {
+                    firstname: student.firstname,
+                    lastname : student.lastname,
+                    pin      : 'notGenYet',
+                    password : 'notGenYet',
+                    mail     : student.mail
+                };
+
+                const newMols = [{
+                    type: 'etuId',
+                    data: `22000000${student.etuId}`
+                }, {
+                    type: 'etuMail',
+                    data: student.mail
+                }, {
+                    type: 'etuLogin',
+                    data: student.login
+                }, {
+                    type: 'etuNumber',
+                    data: student.etuId
+                }];
+
+                createUser(newUser, newMols);
+            }
         });
     })
-    .catch((error) => {
-        console.log(error);
-    });
+    .catch(error => console.log(error));
+
+
+function createUser(user, mols) {
+    axios.post(`https://${config.buckutt.api}/users`, user, options)
+        .then((newUser) => {
+            mols.forEach(mol => axios.post(`https://${config.buckutt.api}/meanoflogins`, mol, options));
+        });
+}

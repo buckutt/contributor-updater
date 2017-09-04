@@ -1,7 +1,8 @@
-const axios       = require('axios');
-const fs          = require('fs');
-const https       = require('https');
-const config      = require('./config');
+const axios   = require('axios');
+const Promise = require('bluebird');
+const fs      = require('fs');
+const https   = require('https');
+const config  = require('./config');
 
 const agent = new https.Agent({
     pfx       : fs.readFileSync(`./${config.certificate.file}`),
@@ -48,7 +49,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
             }
         }));
 
-        return axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}`);
+        return axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}&limit=100`);
     })
     .then((users) => {
         const students = users.data.map(etu => ({
@@ -60,10 +61,12 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
             contributor: (etu.datefin <= Math.ceil(new Date().getTime()/1000))
         }));
 
-        students.forEach((student) => {
-            const member = buckuttMembers.find(m => m.mail === student.mail);
+        const usersCreation = [];
 
-            if (!member) {
+        students.forEach((student) => {
+            const memberIndex = buckuttMembers.findIndex(m => m.mail === student.mail);
+
+            if (memberIndex === -1) {
                 const newUser = {
                     firstname: student.firstname,
                     lastname : student.lastname,
@@ -86,16 +89,71 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
                     data: student.etuId
                 }];
 
-                createUser(newUser, newMols);
+                usersCreation.push(createUser(newUser, newMols, student.contributor));
+            } else {
+                buckuttMembers[memberIndex].isContributor = student.contributor;
             }
-        });
+
+            return Promise.all(usersCreation);
+        })
+        .then((usersCreated) => {
+            buckuttMembers = buckuttMembers.concat(usersCreated);
+
+            const membershipRequests = [];
+
+            buckuttMembers.forEach((member) => {
+                if (member.current.contributor && !member.isContributor) {
+                    membershipRequests.push(removeUserFromGroup(member.id, config.buckutt.contributorGroup, config.buckutt.defaultPeriod));
+                } else if (!member.current.contributor && member.isContributor) {
+                    membershipRequests.push(addUserToGroup(member.id, config.buckutt.contributorGroup, config.buckutt.defaultPeriod));
+                }
+
+                if (!member.current.nonContributor) {
+                    membershipRequests.push(addUserToGroup(member.id, config.buckutt.nonContributorGroup, config.buckutt.defaultPeriod));
+                }
+            });
+
+            return Promise.all(membershipRequests);
+        })
+        .then(() => console.log('Sync finished.'));
     })
     .catch(error => console.log(error));
 
 
-function createUser(user, mols) {
-    axios.post(`https://${config.buckutt.api}/users`, user, options)
+function createUser(user, mols, contributor) {
+    let createdUser = {};
+    return axios.post(`https://${config.buckutt.api}/users`, user, options)
         .then((newUser) => {
-            mols.forEach(mol => axios.post(`https://${config.buckutt.api}/meanoflogins`, mol, options));
-        });
+            createdUser = {
+                id     : newUser.data.id,
+                mail   : newUser.data.mail,
+                current: {
+                    contributor   : false,
+                    nonContributor: false
+                },
+                isContributor: contributor
+            };
+
+            const molsToCreate = mols.map(mol => {
+                mol.User_id = newUser.data.id;
+                return mol;
+            });
+
+            const molsRequests = [];
+
+            molsToCreate.forEach(mol => molsRequests.push(axios.post(`https://${config.buckutt.api}/meanoflogins`, mol, options)));
+
+            return Promise.all(molsRequests);
+        })
+        .then(() => Promise.resolve(createdUser));
+}
+
+function addUserToGroup(userId, groupId, periodId) {
+    const filter = { Period_id: periodId };
+    return axios.post(`https://${config.buckutt.api}/users/${userId}/groups/${groupId}`, filter, options);
+}
+
+function removeUserFromGroup(userId, groupId, periodId) {
+    const filter = { Period_id: periodId };
+    return axios.delete(`https://${config.buckutt.api}/users/${userId}/groups/${groupId}`, filter, options);
 }

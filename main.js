@@ -110,7 +110,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
             }
         });
 
-        return Promise.all(usersCreation);
+        return Promise.all(usersRequests);
     })
     .then((usersCreated) => {
         buckuttMembers = buckuttMembers.concat(usersCreated);

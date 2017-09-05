@@ -79,7 +79,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
 
                 const newMols = [{
                     type: 'etuId',
-                    data: `22000000${student.etuId}`
+                    data: `22000000${student.etuId}`.toString()
                 }, {
                     type: 'etuMail',
                     data: student.mail
@@ -88,21 +88,21 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
                     data: student.login
                 }, {
                     type: 'etuNumber',
-                    data: student.etuId
+                    data: student.etuId.toString()
                 }];
 
                 usersRequests.push(createUser(newUser, newMols, student.contributor));
             } else {
-                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuId') === -1) {
+                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuId') === -1 && student.etuId) {
                     usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuId', data: `22000000${student.etuId}` }));
                 }
-                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuMail') === -1) {
+                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuMail') === -1 && student.mail) {
                     usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id,{ type: 'etuMail', data: student.mail }));
                 }
-                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuLogin') === -1) {
+                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuLogin') === -1 && student.login) {
                     usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuLogin', data: student.login }));
                 }
-                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuNumber') === -1) {
+                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuNumber') === -1 && student.etuId) {
                     usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuNumber', data: student.etuId }));
                 }
 

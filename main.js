@@ -35,12 +35,14 @@ let buckuttMembers = [];
 
 axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
     .then((login) => {
+        console.log('Logged to the BuckUTT API. Fetching BuckUTT users...');
         token = login.data.token;
         options.headers = {'Authorization': `Bearer ${token}`};
 
         return axios.get(`https://${config.buckutt.api}/users/search?q=${notRemoved}&embed=${embedUsers}`, options);
     })
     .then((members) => {
+        console.log('BuckUTT users fetched. Fetching ERP users...');
         buckuttMembers = members.data.map(member => ({
             id     : member.id,
             mail   : member.mail,
@@ -54,13 +56,14 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
         return axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}`);
     })
     .then((users) => {
+        console.log('ERP users fetched. Creating users and mols...');
         const students = users.data.map(etu => ({
             etuId      : etu.array_options.options_student,
             firstname  : etu.firstname,
             lastname   : etu.lastname,
             login      : etu.login,
             mail       : etu.email,
-            contributor: (etu.datefin <= Math.ceil(new Date().getTime()/1000))
+            contributor: (parseInt(etu.datefin) >= Math.ceil(new Date().getTime()/1000) && etu.datefin !== '')
         }));
 
         const usersRequests = [];
@@ -78,18 +81,22 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
                 };
 
                 const newMols = [{
-                    type: 'etuId',
-                    data: `22000000${student.etuId}`.toString()
-                }, {
                     type: 'etuMail',
                     data: student.mail
                 }, {
                     type: 'etuLogin',
                     data: student.login
-                }, {
-                    type: 'etuNumber',
-                    data: student.etuId.toString()
                 }];
+
+                if (student.etuId) {
+                    newMols.push({
+                        type: 'etuNumber',
+                        data: student.etuId.toString()
+                    }, {
+                        type: 'etuId',
+                        data: `22000000${student.etuId}`.toString()
+                    });
+                }
 
                 usersRequests.push(createUser(newUser, newMols, student.contributor));
             } else {
@@ -113,6 +120,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
         return Promise.all(usersRequests);
     })
     .then((usersCreated) => {
+        console.log('Users and mols created. Creating and removing memberships...');
         buckuttMembers = buckuttMembers.concat(usersCreated);
 
         const membershipRequests = [];

@@ -63,7 +63,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
             lastname   : etu.lastname,
             login      : etu.login,
             mail       : etu.email,
-            contributor: (parseInt(etu.datefin) >= Math.ceil(new Date().getTime()/1000) && etu.datefin !== '')
+            contributor: ((parseInt(etu.datefin) >= Math.ceil(new Date().getTime()/1000) && etu.datefin !== '') || etu.need_subscription == 0)
         }));
 
         const usersRequests = [];

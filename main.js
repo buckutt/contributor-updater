@@ -19,16 +19,10 @@ const credentials = {
     meanOfLogin: 'etuMail'
 };
 
-const notRemoved = encodeURIComponent(JSON.stringify({ field: 'isRemoved', eq: false }));
-
-const embedUsers = encodeURIComponent(JSON.stringify({
-    groups: {
-        _through: {
-            period: true
-        }
-    },
-    meansOfLogin: true
-}));
+const embedUsers = encodeURIComponent(JSON.stringify([
+    'meansOfLogin',
+    'memberships'
+]));
 
 let token          = '';
 let buckuttMembers = [];
@@ -39,7 +33,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
         token = login.data.token;
         options.headers = {'Authorization': `Bearer ${token}`};
 
-        return axios.get(`https://${config.buckutt.api}/users/search?q=${notRemoved}&embed=${embedUsers}`, options);
+        return axios.get(`https://${config.buckutt.api}/users?embed=${embedUsers}`, options);
     })
     .then((members) => {
         console.log('BuckUTT users fetched. Fetching ERP users...');
@@ -47,8 +41,8 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
             id     : member.id,
             mail   : member.mail,
             current: {
-                contributor   : (member.groups.findIndex(group => group.id === config.buckutt.contributorGroup && group._through.period.id === config.buckutt.defaultPeriod) > -1),
-                nonContributor: (member.groups.findIndex(group => group.id === config.buckutt.nonContributorGroup && group._through.period.id === config.buckutt.defaultPeriod) > -1)
+                contributor   : member.memberships.find(membership => membership.group_id === config.buckutt.contributorGroup && membership.period_id === config.buckutt.defaultPeriod),
+                nonContributor: member.memberships.find(membership => membership.group_id === config.buckutt.nonContributorGroup && membership.period_id === config.buckutt.defaultPeriod)
             },
             meansOfLogin: member.meansOfLogin.map(mol => mol.type)
         }));
@@ -83,9 +77,6 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
                 const newMols = [{
                     type: 'etuMail',
                     data: student.mail
-                }, {
-                    type: 'etuLogin',
-                    data: student.login
                 }];
 
                 if (student.etuId) {
@@ -106,9 +97,6 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
                 if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuMail') === -1 && student.mail) {
                     usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id,{ type: 'etuMail', data: student.mail }));
                 }
-                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuLogin') === -1 && student.login) {
-                    usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuLogin', data: student.login }));
-                }
                 if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuNumber') === -1 && student.etuId) {
                     usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuNumber', data: student.etuId }));
                 }
@@ -127,7 +115,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
 
         buckuttMembers.forEach((member) => {
             if (member.current.contributor && !member.isContributor) {
-                membershipRequests.push(removeUserFromGroup(member.id, config.buckutt.contributorGroup, config.buckutt.defaultPeriod));
+                membershipRequests.push(removeUserFromGroup(member.current.contributor));
             } else if (!member.current.contributor && member.isContributor) {
                 membershipRequests.push(addUserToGroup(member.id, config.buckutt.contributorGroup, config.buckutt.defaultPeriod));
             }
@@ -169,20 +157,23 @@ function createUser(user, mols, contributor) {
 
 function addMolToUser(userId, mol) {
     const molToCreate   = mol;
-    molToCreate.User_id = userId;
+    molToCreate.user_id = userId;
     console.log(`Add mol ${mol.data} to user ${userId}`);
     return axios.post(`https://${config.buckutt.api}/meansoflogin`, molToCreate, options);
 }
 
 function addUserToGroup(userId, groupId, periodId) {
-    const filter = { Period_id: periodId };
+    const membership = {
+        user_id  : userId,
+        group_id : groupId,
+        period_id: periodId
+    };
+
     console.log(`Add user ${userId} to group ${groupId} (period ${periodId})`);
-    return axios.post(`https://${config.buckutt.api}/users/${userId}/groups/${groupId}`, filter, options);
+    return axios.post(`https://${config.buckutt.api}/memberships`, membership, options);
 }
 
-function removeUserFromGroup(userId, groupId, periodId) {
-    const filter    = { Period_id: periodId };
-    const urlFilter = `?filter=${encodeURIComponent(JSON.stringify(filter))}`;
-    console.log(`Remove user ${userId} from group ${groupId} (period ${periodId})`);
-    return axios.delete(`https://${config.buckutt.api}/users/${userId}/groups/${groupId}${urlFilter}`, options);
+function removeUserFromGroup(membership) {
+    console.log(`Remove user ${membership.user_id} from group ${membership.group_id} (period ${membership.period_id})`);
+    return axios.delete(`https://${config.buckutt.api}/memberships/${membership.id}`, options);
 }

@@ -44,7 +44,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
                 contributor   : member.memberships.find(membership => membership.group_id === config.buckutt.contributorGroup && membership.period_id === config.buckutt.defaultPeriod),
                 nonContributor: member.memberships.find(membership => membership.group_id === config.buckutt.nonContributorGroup && membership.period_id === config.buckutt.defaultPeriod)
             },
-            meansOfLogin: member.meansOfLogin.map(mol => mol.type)
+            meansOfLogin: Object.assign({}, ...member.meansOfLogin.map(mol => ({[mol.type]: mol}))),
         }));
 
         return axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}`);
@@ -63,7 +63,20 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
         const usersRequests = [];
 
         students.forEach((student) => {
-            const memberIndex = buckuttMembers.findIndex(m => m.mail === student.mail);
+            let memberIndex = -1;
+            // Try first to find user by student ID (safest field)
+            if (student.etuId > 0) {
+                memberIndex = buckuttMembers.findIndex(m => {
+                    return m.meansOfLogin.etuNumber && m.meansOfLogin.etuNumber.data === student.etuId.toString();
+                });
+            }
+
+            // If not try to find by email
+            if (memberIndex === -1) {
+                memberIndex = buckuttMembers.findIndex(m => {
+                    return m.mail === student.mail;
+                });
+            }
 
             if (memberIndex === -1) {
                 const newUser = {
@@ -91,14 +104,20 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
 
                 usersRequests.push(createUser(newUser, newMols, student.contributor));
             } else {
-                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuId') === -1 && student.etuId) {
+                if (!('etuId' in buckuttMembers[memberIndex].meansOfLogin) && student.etuId) {
                     usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuId', data: `22000000${student.etuId}` }));
                 }
-                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuMail') === -1 && student.mail) {
-                    usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id,{ type: 'etuMail', data: student.mail }));
+                if (!('etuMail' in buckuttMembers[memberIndex].meansOfLogin) && student.mail) {
+                    usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuMail', data: student.mail }));
                 }
-                if (buckuttMembers[memberIndex].meansOfLogin.indexOf('etuNumber') === -1 && student.etuId) {
+                else if (student.mail !== buckuttMembers[memberIndex].meansOfLogin.etuMail.data) {
+                    usersRequests.push(updateUserMol(buckuttMembers[memberIndex].meansOfLogin.etuMail.id, { type: 'etuMail', data: student.mail }));
+                }
+                if (!('etuNumber' in buckuttMembers[memberIndex].meansOfLogin) && student.etuId) {
                     usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuNumber', data: student.etuId }));
+                }
+                if (buckuttMembers[memberIndex].mail !== student.mail) {
+                    usersRequests.push(updateUserMail(buckuttMembers[memberIndex].id, student.mail ));
                 }
 
                 buckuttMembers[memberIndex].isContributor = student.contributor;
@@ -109,6 +128,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
     })
     .then((usersCreated) => {
         console.log('Users and mols created. Creating and removing memberships...');
+
         buckuttMembers = buckuttMembers.concat(usersCreated);
 
         const membershipRequests = [];
@@ -158,8 +178,18 @@ function createUser(user, mols, contributor) {
 function addMolToUser(userId, mol) {
     const molToCreate   = mol;
     molToCreate.user_id = userId;
-    console.log(`Add mol ${mol.data} to user ${userId}`);
+    console.log(`Add mol ${mol.type}=${mol.data} to user ${userId}`);
     return axios.post(`https://${config.buckutt.api}/meansoflogin`, molToCreate, options);
+}
+
+function updateUserMol(molId, mol) {
+    console.log(`Update mol ${mol.type}=${mol.data} of meansOfLogin ${molId}`);
+    return axios.put(`https://${config.buckutt.api}/meansoflogin/${molId}`, mol, options);
+}
+
+function updateUserMail(userId, mail) {
+    console.log(`Update mail ${mail} of user ${userId}`);
+    return axios.put(`https://${config.buckutt.api}/users/${userId}`, {mail: mail}, options);
 }
 
 function addUserToGroup(userId, groupId, periodId) {

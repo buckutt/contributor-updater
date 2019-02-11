@@ -1,17 +1,7 @@
-const axios   = require('axios');
-const Promise = require('bluebird');
-const fs      = require('fs');
-const https   = require('https');
-const config  = require('./config');
-
-const agent = new https.Agent({
-    pfx       : fs.readFileSync(`./${config.certificate.file}`),
-    passphrase: config.certificate.password
-});
-
-const options = {
-    httpsAgent: agent
-};
+const axios  = require('axios');
+const fs     = require('fs');
+const crypto = require('crypto');
+const config = require('./config');
 
 const credentials = {
     data       : config.buckutt.admin.mol,
@@ -24,16 +14,28 @@ const embedUsers = encodeURIComponent(JSON.stringify([
     'memberships'
 ]));
 
+const generateOptions = (method, url) => {
+    const path = url.split('?');
+    const signaturePayload = `${config.security.fingerprint}-${method}-/${path[0]}`;
+    const hmac = crypto.createHmac('sha256', config.security.privateKey).update(signaturePayload);
+    return {
+        headers: {
+            'Authorization': token ? `Bearer ${token}` : null,
+            'X-Fingerprint': config.security.fingerprint,
+            'X-Signature'  : hmac.digest('hex')
+        }
+    };
+};
+
 let token          = '';
 let buckuttMembers = [];
 
-axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
+axios.post(`https://${config.buckutt.api}/api/v1/auth/login`, credentials, generateOptions('POST', 'auth/login'))
     .then((login) => {
         console.log('Logged to the BuckUTT API. Fetching BuckUTT users...');
         token = login.data.token;
-        options.headers = {'Authorization': `Bearer ${token}`};
 
-        return axios.get(`https://${config.buckutt.api}/users?embed=${embedUsers}`, options);
+        return axios.get(`https://${config.buckutt.api}/api/v1/crud/users?embed=${embedUsers}`, generateOptions('GET', 'crud/users'));
     })
     .then((members) => {
         console.log('BuckUTT users fetched. Fetching ERP users...');
@@ -154,7 +156,7 @@ axios.post(`https://${config.buckutt.api}/services/login`, credentials, options)
 function createUser(user, mols, contributor) {
     let createdUser = {};
     console.log(`Create user ${user.mail} and its mols`);
-    return axios.post(`https://${config.buckutt.api}/users`, user, options)
+    return axios.post(`https://${config.buckutt.api}/api/v1/crud/users`, user, generateOptions('POST', 'crud/users'))
         .then((newUser) => {
             createdUser = {
                 id     : newUser.data.id,
@@ -179,17 +181,17 @@ function addMolToUser(userId, mol) {
     const molToCreate   = mol;
     molToCreate.user_id = userId;
     console.log(`Add mol ${mol.type}=${mol.data} to user ${userId}`);
-    return axios.post(`https://${config.buckutt.api}/meansoflogin`, molToCreate, options);
+    return axios.post(`https://${config.buckutt.api}/api/v1/crud/meansoflogin`, molToCreate, generateOptions('POST', 'crud/meansoflogin'));
 }
 
 function updateUserMol(molId, mol) {
     console.log(`Update mol ${mol.type}=${mol.data} of meansOfLogin ${molId}`);
-    return axios.put(`https://${config.buckutt.api}/meansoflogin/${molId}`, mol, options);
+    return axios.put(`https://${config.buckutt.api}/api/v1/crud/meansoflogin/${molId}`, mol, generateOptions('PUT', `crud/meansoflogin/${molId}`));
 }
 
 function updateUserMail(userId, mail) {
     console.log(`Update mail ${mail} of user ${userId}`);
-    return axios.put(`https://${config.buckutt.api}/users/${userId}`, {mail: mail}, options);
+    return axios.put(`https://${config.buckutt.api}/api/v1/crud/users/${userId}`, {mail: mail}, generateOptions('PUT', `crud/users/${userId}`));
 }
 
 function addUserToGroup(userId, groupId, periodId) {
@@ -200,10 +202,10 @@ function addUserToGroup(userId, groupId, periodId) {
     };
 
     console.log(`Add user ${userId} to group ${groupId} (period ${periodId})`);
-    return axios.post(`https://${config.buckutt.api}/memberships`, membership, options);
+    return axios.post(`https://${config.buckutt.api}/api/v1/crud/memberships`, membership, generateOptions('POST', 'crud/memberships'));
 }
 
 function removeUserFromGroup(membership) {
     console.log(`Remove user ${membership.user_id} from group ${membership.group_id} (period ${membership.period_id})`);
-    return axios.delete(`https://${config.buckutt.api}/memberships/${membership.id}`, options);
+    return axios.delete(`https://${config.buckutt.api}/api/v1/crud/memberships/${membership.id}`, generateOptions('DELETE', `crud/memberships/${membership.id}`));
 }

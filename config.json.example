@@ -13,8 +13,8 @@
         "nonContributorGroup": "6eec03e0-5d0f-49c1-b960-edd9c8b9eefe",
         "defaultPeriod"      : "a9e80d69-6109-4d3e-a316-24ced6195063"
     },
-    "certificate": {
-        "file"    : "certificate.p12",
-        "password": ""
+    "security": {
+        "fingerprint": "contributor-updater",
+        "privateKey" : "foobar"
     }
 }

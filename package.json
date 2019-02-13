@@ -5,6 +5,7 @@
   "author": "Lucas Soulier <lucas.soulier@utt.fr>",
   "private": true,
   "dependencies": {
-    "axios": "^0.16.2"
+    "axios": "^0.16.2",
+    "lodash.chunk": "^4.2.0"
   }
 }

@@ -1,6 +1,7 @@
 const axios  = require('axios');
 const fs     = require('fs');
 const crypto = require('crypto');
+const chunk  = require('lodash.chunk');
 const config = require('./config');
 
 const credentials = {
@@ -27,6 +28,33 @@ const generateOptions = (method, url) => {
     };
 };
 
+const fetchERPPages = (page, contribs) =>
+    axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}&page=${page}&limit=100`)
+        .then((users) => {
+            contribs = contribs.concat(users.data);
+            return fetchERPPages(page + 1, contribs);
+        })
+        .catch(() => Promise.resolve(contribs));
+
+const groupRequests = (requests, groupSize) => {
+    const groupedRequests = chunk(requests, groupSize);
+    let promisesChain = Promise.resolve();
+    let promisesResults = [];
+
+    groupedRequests.forEach((reqs) => {
+        promisesChain = promisesChain
+            .then(() => Promise.all(
+                reqs.map(request => request())
+            ))
+            .then((results) => {
+                promisesResults.concat(results);
+            });
+    });
+
+    return promisesChain
+        .then(() => promisesResults);
+};
+
 let token          = '';
 let buckuttMembers = [];
 
@@ -49,11 +77,11 @@ axios.post(`https://${config.buckutt.api}/api/v1/auth/login`, credentials, gener
             meansOfLogin: Object.assign({}, ...member.meansOfLogin.map(mol => ({[mol.type]: mol}))),
         }));
 
-        return axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}`);
+        return fetchERPPages(0, []);
     })
     .then((users) => {
         console.log('ERP users fetched. Creating users and mols...');
-        const students = users.data.map(etu => ({
+        const students = users.map(etu => ({
             etuId      : etu.array_options.options_student,
             firstname  : etu.firstname,
             lastname   : etu.lastname,
@@ -104,50 +132,51 @@ axios.post(`https://${config.buckutt.api}/api/v1/auth/login`, credentials, gener
                     });
                 }
 
-                usersRequests.push(createUser(newUser, newMols, student.contributor));
+                usersRequests.push(() => createUser(newUser, newMols, student.contributor));
             } else {
                 if (!('etuId' in buckuttMembers[memberIndex].meansOfLogin) && student.etuId) {
-                    usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuId', data: `22000000${student.etuId}` }));
+                    usersRequests.push(() => addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuId', data: `22000000${student.etuId}` }));
                 }
                 if (!('etuMail' in buckuttMembers[memberIndex].meansOfLogin) && student.mail) {
-                    usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuMail', data: student.mail }));
+                    usersRequests.push(() => addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuMail', data: student.mail }));
                 }
                 else if (student.mail !== buckuttMembers[memberIndex].meansOfLogin.etuMail.data) {
-                    usersRequests.push(updateUserMol(buckuttMembers[memberIndex].meansOfLogin.etuMail.id, { type: 'etuMail', data: student.mail }));
+                    usersRequests.push(() => updateUserMol(buckuttMembers[memberIndex].meansOfLogin.etuMail.id, { type: 'etuMail', data: student.mail }));
                 }
                 if (!('etuNumber' in buckuttMembers[memberIndex].meansOfLogin) && student.etuId) {
-                    usersRequests.push(addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuNumber', data: student.etuId }));
+                    usersRequests.push(() => addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuNumber', data: student.etuId }));
                 }
                 if (buckuttMembers[memberIndex].mail !== student.mail) {
-                    usersRequests.push(updateUserMail(buckuttMembers[memberIndex].id, student.mail ));
+                    usersRequests.push(() => updateUserMail(buckuttMembers[memberIndex].id, student.mail ));
                 }
 
                 buckuttMembers[memberIndex].isContributor = student.contributor;
             }
         });
 
-        return Promise.all(usersRequests);
+        return groupRequests(usersRequests, 10);
     })
-    .then((usersCreated) => {
+    .then((usersUpdated) => {
         console.log('Users and mols created. Creating and removing memberships...');
 
+        const usersCreated = usersUpdated.filter(user => user.isContributor);
         buckuttMembers = buckuttMembers.concat(usersCreated);
 
         const membershipRequests = [];
 
         buckuttMembers.forEach((member) => {
             if (member.current.contributor && !member.isContributor) {
-                membershipRequests.push(removeUserFromGroup(member.current.contributor));
+                membershipRequests.push(() => removeUserFromGroup(member.current.contributor));
             } else if (!member.current.contributor && member.isContributor) {
-                membershipRequests.push(addUserToGroup(member.id, config.buckutt.contributorGroup, config.buckutt.defaultPeriod));
+                membershipRequests.push(() => addUserToGroup(member.id, config.buckutt.contributorGroup, config.buckutt.defaultPeriod));
             }
 
             if (!member.current.nonContributor) {
-                membershipRequests.push(addUserToGroup(member.id, config.buckutt.nonContributorGroup, config.buckutt.defaultPeriod));
+                membershipRequests.push(() => addUserToGroup(member.id, config.buckutt.nonContributorGroup, config.buckutt.defaultPeriod));
             }
         });
 
-        return Promise.all(membershipRequests);
+        return groupRequests(membershipRequests, 10);
     })
     .then(() => console.log('Sync finished.'))
     .catch(error => console.log(error));
@@ -170,7 +199,7 @@ function createUser(user, mols, contributor) {
 
             const molsRequests = [];
 
-            mols.forEach(mol => molsRequests.push(addMolToUser(createdUser.id, mol)));
+            mols.forEach(mol => molsRequests.push(() => addMolToUser(createdUser.id, mol)));
 
             return Promise.all(molsRequests);
         })

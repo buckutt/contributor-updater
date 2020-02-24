@@ -1,20 +1,16 @@
 {
     "erp": {
-        "host": "picsou.uttnetgroup.net",
+        "host": "picsou.uttnetgroup.fr",
         "key" : ""
     },
     "buckutt": {
         "api"  : "api.buck.utt.fr",
         "admin": {
-            "mol"     : "contributor.updater@buckless.com",
+            "mail": "contributor.updater@buckless.com",
             "password": ""
         },
-        "contributorGroup"   : "c2745f61-ba7b-44f3-8178-2d23ec1520ab",
+        "contributorGroup": "c2745f61-ba7b-44f3-8178-2d23ec1520ab",
         "nonContributorGroup": "6eec03e0-5d0f-49c1-b960-edd9c8b9eefe",
-        "defaultPeriod"      : "a9e80d69-6109-4d3e-a316-24ced6195063"
-    },
-    "security": {
-        "fingerprint": "contributor-updater",
-        "privateKey" : "foobar"
+        "defaultPeriod": "a9e80d69-6109-4d3e-a316-24ced6195063"
     }
 }

@@ -1,229 +1,219 @@
-const axios  = require('axios');
-const fs     = require('fs');
-const crypto = require('crypto');
-const chunk  = require('lodash.chunk');
+const axios_ = require('axios');
+const https = require('https');
+const chunk = require('lodash.chunk');
 const config = require('./config');
 
-const credentials = {
-    data       : config.buckutt.admin.mol,
-    password   : config.buckutt.admin.password,
-    meanOfLogin: 'etuMail'
-};
+// Waiting for the certificate fullchain to be updated...
+const axios = axios_.create({
+    baseURL: `https://${config.buckutt.api}/api/v1/`,
+    httpsAgent: new https.Agent({  
+        rejectUnauthorized: false
+    })
+});
+
+let token;
+
+axios.interceptors.request.use(config => {
+    if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+    }
+
+    return config;
+});
 
 const embedUsers = encodeURIComponent(JSON.stringify([
-    'meansOfLogin',
+    'wallets',
     'memberships'
 ]));
 
-const generateOptions = (method, url) => {
-    const path = url.split('?');
-    const signaturePayload = `${config.security.fingerprint}-${method}-/${path[0]}`;
-    const hmac = crypto.createHmac('sha256', config.security.privateKey).update(signaturePayload);
-    return {
-        headers: {
-            'Authorization': token ? `Bearer ${token}` : null,
-            'X-Fingerprint': config.security.fingerprint,
-            'X-Signature'  : hmac.digest('hex')
+const fetchERPPages = async (page, contribs) => {
+    try {
+        const { data } = await axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}&page=${page}&limit=100`);
+
+        return fetchERPPages(page + 1, contribs.concat(data));
+    } catch(err) {
+        return contribs;
+    }
+};
+
+const groupRequests = async (requests, groupSize) => {
+    const groupedRequests = chunk(requests, groupSize);
+    let promisesResults = [];
+    let results;
+
+    for (const reqs of groupedRequests) {
+        results = await Promise.all(reqs.map(request => request()));
+
+        promisesResults = promisesResults.concat(results);
+    }
+
+    return promisesResults;
+};
+
+const process = async () => {
+    const credentials = config.buckutt.admin;
+
+    try {
+        const { data: login } = await axios.post('auth/login', credentials);
+
+        token = login.token;
+
+        console.log('Logged to the BuckUTT API. Fetching BuckUTT users...');
+    } catch {
+        console.log('Error: Unable to connect to the BuckUTT API.');
+        return;
+    }
+
+    let buckuttUsers = [];
+
+    try {
+        const { data: users } = await axios.get(`crud/users?embed=${embedUsers}`);
+
+        buckuttUsers = users.map(user => ({
+            id: user.id,
+            mail: user.mail,
+            current: {
+                contributor: user.memberships.find(membership => membership.group_id === config.buckutt.contributorGroup && membership.period_id === config.buckutt.defaultPeriod),
+                nonContributor: user.memberships.find(membership => membership.group_id === config.buckutt.nonContributorGroup && membership.period_id === config.buckutt.defaultPeriod)
+            },
+            wallets: user.wallets
+        }));
+
+        console.log('BuckUTT users fetched. Fetching ERP users...');
+    } catch(err) {
+        console.log('Error: Unable to fetch BuckUTT users.');
+        return;
+    }
+
+    let erpUsers;
+
+    try {
+        const users = await fetchERPPages(0, []);
+
+        erpUsers = users.map(etu => ({
+            etuId: etu.array_options.options_student ? `22${etu.array_options.options_student.padStart(11, '0')}` : null,
+            firstname: etu.firstname,
+            lastname: etu.lastname,
+            login: etu.login,
+            mail: etu.email,
+            contributor: ((parseInt(etu.datefin) >= Math.ceil(new Date().getTime() / 1000) && etu.datefin !== '') || etu.need_subscription == 0)
+        }));
+
+        console.log('ERP users fetched. Creating users, wallets and memberships...');
+    } catch(err) {
+        console.log('Error: unable to connect to the ERP.');
+        return;
+    }
+
+    const usersRequests = [];
+    const walletRequests = [];
+
+    erpUsers.forEach(erpUser => {
+        const buckuttUserIndex = buckuttUsers.findIndex(bUser => bUser.wallets.find(w => w.logical_id === erpUser.etuId) || bUser.mail === erpUser.mail);
+        const buckuttUser = buckuttUsers[buckuttUserIndex];
+
+        if (!buckuttUser) {
+            const newUser = {
+                firstname: erpUser.firstname,
+                lastname: erpUser.lastname,
+                pin: 'notGenYet',
+                password: 'notGenYet',
+                mail: erpUser.mail
+            };
+
+            usersRequests.push(() => createUser(newUser, erpUser.etuId, erpUser.contributor));
+        } else {
+            if (buckuttUser.wallets.length === 0) {
+                walletRequests.push(() => createWallet(buckuttUser.id, erpUser.etuId));
+            }
+
+            if (buckuttUser.mail !== erpUser.mail) {
+                walletRequests.push(() => updateMail(buckuttUser.id, erpUser.mail));
+            }
+
+            // We admit that the first created wallet of an user is its main one
+            if (buckuttUser.wallets[0] && !buckuttUser.wallets[0].logical_id && erpUser.etuId) {
+                walletRequests.push(() => updateWallet(buckuttUser.wallets[0].id, erpUser.etuId));
+            }
+
+            buckuttUsers[buckuttUserIndex].isContributor = erpUser.contributor;
         }
+    });
+
+    let usersCreated;
+    try {
+        usersCreated = await groupRequests(usersRequests, 5);
+        await groupRequests(walletRequests, 5);
+
+        console.log('Users and wallets created. Creating and removing memberships...');
+    } catch(err) {
+        console.log('Error: Failed to create and update users');
+        return;
+    }
+
+    const allUsers = usersCreated.concat(buckuttUsers);
+    const membershipRequests = [];
+
+    allUsers.forEach(user => {
+        if (user.current.contributor && !user.isContributor) {
+            membershipRequests.push(() => removeUserFromGroup(user.current.contributor));
+        } else if (!user.current.contributor && user.isContributor) {
+            membershipRequests.push(() => addUserToGroup(user.id, config.buckutt.contributorGroup, config.buckutt.defaultPeriod));
+        }
+
+        if (!user.current.nonContributor) {
+            membershipRequests.push(() => addUserToGroup(user.id, config.buckutt.nonContributorGroup, config.buckutt.defaultPeriod));
+        }
+    });
+
+    await groupRequests(membershipRequests, 5);
+
+    console.log('Sync done.');
+};
+
+const createUser = async (user, logicalId, isContributor) => {
+    console.log(`Create user ${user.mail}`);
+
+    const { data: createdUser } = await axios.post('crud/users', user);
+
+    await createWallet(createdUser.id, logicalId);
+    
+    return {
+        id: 'foo',
+        mail: 'bar',
+        current: {
+            contributor: false,
+            nonContributor: false
+        },
+        isContributor
     };
 };
 
-const fetchERPPages = (page, contribs) =>
-    axios.get(`http://${config.erp.host}/api/index.php/members?DOLAPIKEY=${config.erp.key}&page=${page}&limit=100`)
-        .then((users) => {
-            contribs = contribs.concat(users.data);
-            return fetchERPPages(page + 1, contribs);
-        })
-        .catch(() => Promise.resolve(contribs));
+const createWallet = (userId, logicalId) => {
+    console.log(`Create wallet of user ${userId}`);
 
-const groupRequests = (requests, groupSize) => {
-    const groupedRequests = chunk(requests, groupSize);
-    let promisesChain = Promise.resolve();
-    let promisesResults = [];
+    const newWallet = {
+        logical_id: logicalId,
+        physical_id: 'Carte étu',
+        user_id: userId
+    };
 
-    groupedRequests.forEach((reqs) => {
-        promisesChain = promisesChain
-            .then(() => Promise.all(
-                reqs.map(request => request())
-            ))
-            .then((results) => {
-                promisesResults.concat(results);
-            });
-    });
-
-    return promisesChain
-        .then(() => promisesResults);
+    return axios.post('crud/wallets', newWallet);
 };
 
-let token          = '';
-let buckuttMembers = [];
+const updateWallet = (walletId, logicalId) => {
+    console.log(`Update wallet ${walletId}`);
 
-axios.post(`https://${config.buckutt.api}/api/v1/auth/login`, credentials, generateOptions('POST', 'auth/login'))
-    .then((login) => {
-        console.log('Logged to the BuckUTT API. Fetching BuckUTT users...');
-        token = login.data.token;
+    return axios.put(`crud/wallets/${walletId}`, { logical_id: logicalId });
+};
 
-        return axios.get(`https://${config.buckutt.api}/api/v1/crud/users?embed=${embedUsers}`, generateOptions('GET', 'crud/users'));
-    })
-    .then((members) => {
-        console.log('BuckUTT users fetched. Fetching ERP users...');
-        buckuttMembers = members.data.map(member => ({
-            id     : member.id,
-            mail   : member.mail,
-            current: {
-                contributor   : member.memberships.find(membership => membership.group_id === config.buckutt.contributorGroup && membership.period_id === config.buckutt.defaultPeriod),
-                nonContributor: member.memberships.find(membership => membership.group_id === config.buckutt.nonContributorGroup && membership.period_id === config.buckutt.defaultPeriod)
-            },
-            meansOfLogin: Object.assign({}, ...member.meansOfLogin.map(mol => ({[mol.type]: mol}))),
-        }));
-
-        return fetchERPPages(0, []);
-    })
-    .then((users) => {
-        console.log('ERP users fetched. Creating users and mols...');
-        const students = users.map(etu => ({
-            etuId      : etu.array_options.options_student,
-            firstname  : etu.firstname,
-            lastname   : etu.lastname,
-            login      : etu.login,
-            mail       : etu.email,
-            contributor: ((parseInt(etu.datefin) >= Math.ceil(new Date().getTime()/1000) && etu.datefin !== '') || etu.need_subscription == 0)
-        }));
-
-        const usersRequests = [];
-
-        students.forEach((student) => {
-            let memberIndex = -1;
-            // Try first to find user by student ID (safest field)
-            if (student.etuId > 0) {
-                memberIndex = buckuttMembers.findIndex(m => {
-                    return m.meansOfLogin.etuNumber && m.meansOfLogin.etuNumber.data === student.etuId.toString();
-                });
-            }
-
-            // If not try to find by email
-            if (memberIndex === -1) {
-                memberIndex = buckuttMembers.findIndex(m => {
-                    return m.mail === student.mail;
-                });
-            }
-
-            if (memberIndex === -1) {
-                const newUser = {
-                    firstname: student.firstname,
-                    lastname : student.lastname,
-                    pin      : 'notGenYet',
-                    password : 'notGenYet',
-                    mail     : student.mail
-                };
-
-                const newMols = [{
-                    type: 'etuMail',
-                    data: student.mail
-                }];
-
-                if (student.etuId) {
-                    newMols.push({
-                        type: 'etuNumber',
-                        data: student.etuId.toString()
-                    }, {
-                        type: 'etuId',
-                        data: `22000000${student.etuId}`.toString()
-                    });
-                }
-
-                usersRequests.push(() => createUser(newUser, newMols, student.contributor));
-            } else {
-                if (!('etuId' in buckuttMembers[memberIndex].meansOfLogin) && student.etuId) {
-                    usersRequests.push(() => addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuId', data: `22000000${student.etuId}` }));
-                }
-                if (!('etuMail' in buckuttMembers[memberIndex].meansOfLogin) && student.mail) {
-                    usersRequests.push(() => addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuMail', data: student.mail }));
-                }
-                else if (student.mail !== buckuttMembers[memberIndex].meansOfLogin.etuMail.data) {
-                    usersRequests.push(() => updateUserMol(buckuttMembers[memberIndex].meansOfLogin.etuMail.id, { type: 'etuMail', data: student.mail }));
-                }
-                if (!('etuNumber' in buckuttMembers[memberIndex].meansOfLogin) && student.etuId) {
-                    usersRequests.push(() => addMolToUser(buckuttMembers[memberIndex].id, { type: 'etuNumber', data: student.etuId }));
-                }
-                if (buckuttMembers[memberIndex].mail !== student.mail) {
-                    usersRequests.push(() => updateUserMail(buckuttMembers[memberIndex].id, student.mail ));
-                }
-
-                buckuttMembers[memberIndex].isContributor = student.contributor;
-            }
-        });
-
-        return groupRequests(usersRequests, 10);
-    })
-    .then((usersUpdated) => {
-        console.log('Users and mols created. Creating and removing memberships...');
-
-        const usersCreated = usersUpdated.filter(user => user.isContributor);
-        buckuttMembers = buckuttMembers.concat(usersCreated);
-
-        const membershipRequests = [];
-
-        buckuttMembers.forEach((member) => {
-            if (member.current.contributor && !member.isContributor) {
-                membershipRequests.push(() => removeUserFromGroup(member.current.contributor));
-            } else if (!member.current.contributor && member.isContributor) {
-                membershipRequests.push(() => addUserToGroup(member.id, config.buckutt.contributorGroup, config.buckutt.defaultPeriod));
-            }
-
-            if (!member.current.nonContributor) {
-                membershipRequests.push(() => addUserToGroup(member.id, config.buckutt.nonContributorGroup, config.buckutt.defaultPeriod));
-            }
-        });
-
-        return groupRequests(membershipRequests, 10);
-    })
-    .then(() => console.log('Sync finished.'))
-    .catch(error => console.log(error));
-
-
-function createUser(user, mols, contributor) {
-    let createdUser = {};
-    console.log(`Create user ${user.mail} and its mols`);
-    return axios.post(`https://${config.buckutt.api}/api/v1/crud/users`, user, generateOptions('POST', 'crud/users'))
-        .then((newUser) => {
-            createdUser = {
-                id     : newUser.data.id,
-                mail   : newUser.data.mail,
-                current: {
-                    contributor   : false,
-                    nonContributor: false
-                },
-                isContributor: contributor
-            };
-
-            const molsRequests = [];
-
-            mols.forEach(mol => molsRequests.push(() => addMolToUser(createdUser.id, mol)));
-
-            return Promise.all(molsRequests);
-        })
-        .then(() => Promise.resolve(createdUser));
-}
-
-function addMolToUser(userId, mol) {
-    const molToCreate   = mol;
-    molToCreate.user_id = userId;
-    console.log(`Add mol ${mol.type}=${mol.data} to user ${userId}`);
-    return axios.post(`https://${config.buckutt.api}/api/v1/crud/meansoflogin`, molToCreate, generateOptions('POST', 'crud/meansoflogin'));
-}
-
-function updateUserMol(molId, mol) {
-    console.log(`Update mol ${mol.type}=${mol.data} of meansOfLogin ${molId}`);
-    return axios.put(`https://${config.buckutt.api}/api/v1/crud/meansoflogin/${molId}`, mol, generateOptions('PUT', `crud/meansoflogin/${molId}`));
-}
-
-function updateUserMail(userId, mail) {
+const updateMail = (userId, mail) => {
     console.log(`Update mail ${mail} of user ${userId}`);
-    return axios.put(`https://${config.buckutt.api}/api/v1/crud/users/${userId}`, {mail: mail}, generateOptions('PUT', `crud/users/${userId}`));
-}
 
-function addUserToGroup(userId, groupId, periodId) {
+    return axios.put(`crud/users/${userId}`, { mail });
+};
+
+const addUserToGroup = (userId, groupId, periodId) => {
     const membership = {
         user_id  : userId,
         group_id : groupId,
@@ -231,10 +221,12 @@ function addUserToGroup(userId, groupId, periodId) {
     };
 
     console.log(`Add user ${userId} to group ${groupId} (period ${periodId})`);
-    return axios.post(`https://${config.buckutt.api}/api/v1/crud/memberships`, membership, generateOptions('POST', 'crud/memberships'));
-}
+    return axios.post('crud/memberships', membership);
+};
 
-function removeUserFromGroup(membership) {
+const removeUserFromGroup = (membership) => {
     console.log(`Remove user ${membership.user_id} from group ${membership.group_id} (period ${membership.period_id})`);
-    return axios.delete(`https://${config.buckutt.api}/api/v1/crud/memberships/${membership.id}`, generateOptions('DELETE', `crud/memberships/${membership.id}`));
-}
+    return axios.delete(`crud/memberships/${membership.id}`);
+};
+
+process();

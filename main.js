@@ -179,12 +179,13 @@ const createUser = async (user, logicalId, isContributor) => {
     await createWallet(createdUser.id, logicalId);
     
     return {
-        id: 'foo',
-        mail: 'bar',
+        id: createdUser.id,
+        mail: createdUser.mail,
         current: {
             contributor: false,
             nonContributor: false
         },
+        wallets: [],
         isContributor
     };
 };
